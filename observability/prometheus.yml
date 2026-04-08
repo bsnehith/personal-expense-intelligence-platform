@@ -22,11 +22,3 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["genai-service:8003"]
-
-# Optional: push all scraped metrics to Grafana Cloud.
-# Replace <...> placeholders with your stack details from Grafana Cloud portal.
-remote_write:
-  - url: https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/prom/push
-    basic_auth:
-      username: "3096304"
-      password: "${GRAFANA_CLOUD_API_TOKEN}"

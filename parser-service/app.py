@@ -28,6 +28,7 @@ USE_KAFKA_PATH = os.environ.get("USE_KAFKA_UPLOAD_PATH", "1") == "1"
 USE_CLASSIFY_BATCH = os.environ.get("USE_CLASSIFY_BATCH", "0") == "1"
 CLASSIFY_BATCH_CHUNK = max(1, int(os.environ.get("CLASSIFY_BATCH_CHUNK", "50")))
 REDIS_URL = os.environ.get("REDIS_URL")
+ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".csv", ".xlsx", ".xls"}
 
 statement_parse_latency_ms = Histogram(
     "statement_parse_latency_ms",
@@ -125,6 +126,19 @@ def metrics():
 async def parse_upload(file: UploadFile = File(...)):
     content = await file.read()
     name = file.filename or "upload"
+    lower = name.lower()
+    if not any(lower.endswith(ext) for ext in ALLOWED_UPLOAD_EXTENSIONS):
+        async def unsupported() -> AsyncIterator[bytes]:
+            yield _sse(
+                {
+                    "step": "error",
+                    "label": "Unsupported file type. Use only PDF, CSV, or Excel (.xlsx/.xls).",
+                    "done": 0,
+                    "total": 0,
+                }
+            )
+
+        return StreamingResponse(unsupported(), media_type="text/event-stream")
     t0 = time.perf_counter()
 
     async def events() -> AsyncIterator[bytes]:
@@ -147,7 +161,13 @@ async def parse_upload(file: UploadFile = File(...)):
             # CPU-heavy PDF parsing must not block the event loop (keeps SSE alive for clients/proxies).
             raw_rows = await asyncio.to_thread(parser_fn, content, name)
         except Exception as e:
-            yield _sse({"step": "error", "label": str(e), "done": 0, "total": 0})
+            msg = str(e)
+            if "File is not a zip file" in msg:
+                msg = (
+                    "Invalid Excel format: this file appears mislabeled or corrupted. "
+                    "Please re-save/export as .xlsx or CSV and upload again."
+                )
+            yield _sse({"step": "error", "label": msg, "done": 0, "total": 0})
             _observe_parse_latency_ms(t0)
             _observe_parse_outcome(False)
             return

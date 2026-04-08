@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 
 from .categories import CATEGORY_IDS, IDX_TO_ID, REVIEW_THRESHOLD, UNCATEGORISED_THRESHOLD
+from .merchant_clean import clean_merchant
 
 
 class Classifier:
@@ -19,7 +20,10 @@ class Classifier:
         self.mode = self.meta.get("mode", "tfidf")
 
     def _text(self, merchant_raw: str, description: str, amount: float) -> str:
-        return f"{merchant_raw} {description} amt={amount}"
+        # Use cleaned merchant + free-text description so the model generalises
+        # better across noisy bank prefixes (UPI/DR/.../ etc.).
+        merchant_clean = clean_merchant(merchant_raw or "")
+        return f"{merchant_clean} {description} amt={amount}"
 
     def predict_proba_labels(self, merchant_raw: str, description: str, amount: float):
         text = self._text(merchant_raw, description or "", float(amount))

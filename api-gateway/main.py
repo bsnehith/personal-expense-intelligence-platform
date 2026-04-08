@@ -17,6 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 from metrics import active_sse_feeds, metrics_response, upload_bytes_total
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".csv", ".xlsx", ".xls"}
 
 BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
 CAT_TOPIC = os.environ.get("KAFKA_CAT_TOPIC", "categorised_transactions")
@@ -130,6 +131,12 @@ async def feed_stream():
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     name = file.filename or "upload"
+    lower = name.lower()
+    if not any(lower.endswith(ext) for ext in ALLOWED_UPLOAD_EXTENSIONS):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Use only PDF, CSV, or Excel (.xlsx/.xls).",
+        )
     content_type = file.content_type or "application/octet-stream"
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:

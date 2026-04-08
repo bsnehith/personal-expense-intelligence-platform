@@ -10,6 +10,7 @@ import ConfidenceBadge from '../components/ConfidenceBadge'
 import PageHeader from '../components/ui/PageHeader'
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+const ALLOWED_EXTENSIONS = new Set(['pdf', 'csv', 'xlsx', 'xls'])
 
 export default function UploadPage() {
   const {
@@ -64,6 +65,11 @@ export default function UploadPage() {
   const handleFile = useCallback(
     async (file) => {
       if (!file) return
+      const ext = (file.name?.split('.').pop() || '').toLowerCase()
+      if (!ALLOWED_EXTENSIONS.has(ext)) {
+        setUploadError('Only PDF, CSV, and Excel files (.xlsx/.xls) are allowed.')
+        return
+      }
       if (file.size > MAX_UPLOAD_BYTES) {
         setUploadError('File too large (max 20 MB).')
         return
@@ -140,6 +146,24 @@ export default function UploadPage() {
     }, 1000)
     return () => window.clearInterval(id)
   }, [parseJob?.running])
+
+  // Safety net: if terminal SSE event is missed but all rows are already rendered,
+  // mark the upload as complete so the UI does not remain stuck in "running".
+  useEffect(() => {
+    if (!parseJob?.running) return
+    if (!parseJob?.total || parseJob.total <= 0) return
+    if (uploaded.length < parseJob.total) return
+
+    updateParseJob({
+      step: 'done',
+      label: 'Done',
+      done: parseJob.total,
+      total: parseJob.total,
+      running: false,
+      indeterminate: false,
+    })
+    finishParseJob('success')
+  }, [parseJob, uploaded.length, updateParseJob, finishParseJob])
 
   const onDrop = useCallback(
     (e) => {
@@ -244,7 +268,7 @@ export default function UploadPage() {
             <FileSpreadsheet className="h-3.5 w-3.5" />
             PDF · CSV · XLSX
           </span>
-          <span>· max 100MB</span>
+          <span>· max 20MB</span>
         </p>
       </motion.div>
 

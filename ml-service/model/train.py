@@ -19,6 +19,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 from .categories import CATEGORY_IDS, ID_TO_IDX
+from .merchant_clean import clean_merchant
 from .synthetic_data import generate_bootstrap_rows
 
 try:
@@ -56,7 +57,8 @@ def _load_frame(csv_path: str | None) -> pd.DataFrame:
 
 
 def _build_text(row: pd.Series) -> str:
-    return f"{row['merchant_raw']} {row.get('description', '')} amt={row['amount']}"
+    merchant_clean = clean_merchant(str(row.get("merchant_raw", "")))
+    return f"{merchant_clean} {row.get('description', '')} amt={row['amount']}"
 
 
 def _resolve_gold_eval_path(explicit: str | None) -> str | None:

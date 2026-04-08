@@ -108,36 +108,6 @@ Project-level tests live in `tests/` and validate required contracts (endpoints,
 
 If your assessor requires a PNG specifically, export your final diagram as `docs/architecture.png`.
 
-### Optional: Grafana Cloud (`grafana.com`) setup
-
-You can keep local Grafana and additionally send metrics to Grafana Cloud.
-
-1. Create a Grafana Cloud stack and collect:
-   - Prometheus `remote_write` URL
-   - Prometheus user ID
-   - Cloud API key (metrics publisher)
-2. Open `observability/prometheus.grafana-cloud.yml` and replace:
-   - `<GRAFANA_CLOUD_PROM_URL>`
-   - `<GRAFANA_CLOUD_PROM_USERID>`
-   - `<GRAFANA_CLOUD_PROM_API_KEY>`
-3. Start Prometheus using the cloud config:
-
-```bash
-docker compose stop prometheus
-docker compose run --service-ports --use-aliases \
-  -v ./observability/prometheus.grafana-cloud.yml:/etc/prometheus/prometheus.yml:ro \
-  prometheus
-```
-
-4. In Grafana Cloud, import dashboards from:
-   - `observability/grafana/dashboards/categorisation-performance.json`
-   - `observability/grafana/dashboards/pipeline-health.json`
-   - `observability/grafana/dashboards/anomaly-genai.json`
-
-Notes:
-- This is additive; your local stack still works with `observability/prometheus.yml`.
-- Keep API keys out of git and rotate if exposed.
-
 ## API contract (frontend)
 
 Matches `frontend/src/lib/api.js`: `/feed/stream`, `/upload`, `/correct`, `/retrain`, `/model-info`, `/coach/stream`, `/coach/monthly`, `/coach/statement` (SSE statement summary after upload).

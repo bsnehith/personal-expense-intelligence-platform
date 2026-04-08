@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import zipfile
 from typing import Any
 
 import pandas as pd
@@ -9,11 +10,30 @@ import pandas as pd
 
 def parse_xlsx(content: bytes, filename: str) -> list[dict[str, Any]]:
     lower = os.path.basename(filename or "").lower()
-    if lower.endswith(".xls"):
-        # Legacy Excel requires xlrd engine.
-        df = pd.read_excel(io.BytesIO(content), engine="xlrd")
-    else:
-        df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
+    df = None
+    errors: list[str] = []
+
+    # Try engine based on extension first, but fall back to the other engine when
+    # users upload files with mismatched extension/content.
+    preferred = "xlrd" if lower.endswith(".xls") else "openpyxl"
+    engines = [preferred, "xlrd" if preferred == "openpyxl" else "openpyxl"]
+
+    for eng in engines:
+        try:
+            df = pd.read_excel(io.BytesIO(content), engine=eng)
+            break
+        except (zipfile.BadZipFile, ValueError, ImportError) as e:
+            errors.append(f"{eng}: {e}")
+        except Exception as e:
+            errors.append(f"{eng}: {e}")
+
+    if df is None:
+        # Provide actionable error instead of raw "File is not a zip file".
+        raise ValueError(
+            "Unable to read Excel file. Please upload a valid .xlsx/.xls file "
+            "or export the statement as CSV. Details: " + " | ".join(errors)
+        )
+
     df.columns = [str(c).strip().lower() for c in df.columns]
     colmap = {}
     for c in df.columns:
