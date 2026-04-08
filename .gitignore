@@ -1,0 +1,12 @@
+.env
+**/node_modules/
+**/dist/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+ml-service/model/artifacts/*.joblib
+ml-service/model/artifacts/metadata.json
+data/*.csv
+mlruns/
+frontend/.env.local

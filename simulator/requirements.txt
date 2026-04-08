@@ -1,0 +1,2 @@
+# kafka-python 2.0.x breaks on Python 3.12 (kafka.vendor.six.moves); ng is a drop-in fork
+kafka-python-ng>=2.2.0

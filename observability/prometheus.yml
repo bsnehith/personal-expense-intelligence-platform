@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "api-gateway"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api-gateway:8000"]
+
+  - job_name: "ml-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ml-service:8001"]
+
+  - job_name: "parser-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["parser-service:8002"]
+
+  - job_name: "genai-service"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["genai-service:8003"]
+
+# Optional: push all scraped metrics to Grafana Cloud.
+# Replace <...> placeholders with your stack details from Grafana Cloud portal.
+remote_write:
+  - url: https://prometheus-prod-43-prod-ap-south-1.grafana.net/api/prom/push
+    basic_auth:
+      username: "3096304"
+      password: "${GRAFANA_CLOUD_API_TOKEN}"

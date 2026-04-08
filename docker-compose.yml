@@ -1,0 +1,258 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  # Volume name bumped so a fresh init runs for anyone who had an old pgdata
+  # without the expense role. If you still see auth errors: docker compose down -v
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-expense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-expense}
+      POSTGRES_DB: ${POSTGRES_DB:-expense}
+    ports:
+      - "5432:5432"
+    volumes:
+      - expense_platform_pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      # pg_isready alone can pass before role/password work; verify real login (must match POSTGRES_* above)
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-expense} -d ${POSTGRES_DB:-expense} && PGPASSWORD=${POSTGRES_PASSWORD:-expense} psql -h 127.0.0.1 -U ${POSTGRES_USER:-expense} -d ${POSTGRES_DB:-expense} -c 'SELECT 1'",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  mlflow:
+    build: ./mlflow-server
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - ${DATABASE_URL_DOCKER:-postgresql://expense:expense@postgres:5432/expense}
+      - --default-artifact-root
+      - /mlflow/artifacts
+
+  ml-service:
+    build: ./ml-service
+    ports:
+      - "8001:8001"
+    healthcheck:
+      # Entrypoint may train on first boot before uvicorn listens — avoid parser/gateway racing ahead.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 8s
+      retries: 36
+      start_period: 300s
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MODEL_DIR: /app/model/artifacts
+      DATA_DIR: /app/data
+      TRAIN_ON_BOOT: "1"
+      USE_EMBEDDING_MODEL: ${USE_EMBEDDING_MODEL:-0}
+      USE_ENSEMBLE: ${USE_ENSEMBLE:-0}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://expense:expense@postgres:5432/expense}
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RETRAIN_CORRECTION_THRESHOLD: ${RETRAIN_CORRECTION_THRESHOLD:-50}
+    volumes:
+      - ./data:/app/data
+      - ml_artifacts:/app/model/artifacts
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mlflow:
+        condition: service_started
+
+  parser-service:
+    build: ./parser-service
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    environment:
+      ML_SERVICE_URL: http://ml-service:8001
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      USE_CLASSIFY_BATCH: ${USE_CLASSIFY_BATCH:-0}
+      CLASSIFY_BATCH_CHUNK: ${CLASSIFY_BATCH_CHUNK:-50}
+      USE_KAFKA_UPLOAD_PATH: ${USE_KAFKA_UPLOAD_PATH:-1}
+    depends_on:
+      ml-service:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  genai-service:
+    build: ./genai-service
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 8s
+      retries: 5
+      start_period: 15s
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite-preview}
+
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ML_SERVICE_URL: http://ml-service:8001
+      PARSER_SERVICE_URL: http://parser-service:8002
+      GENAI_SERVICE_URL: http://genai-service:8003
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+      parser-service:
+        condition: service_healthy
+      genai-service:
+        condition: service_healthy
+
+  simulator:
+    build: ./simulator
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      TX_INTERVAL_SEC: ${TX_INTERVAL_SEC:-5}
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+
+  loki:
+    image: grafana/loki:2.9.8
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    command:
+      - -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+volumes:
+  ml_artifacts: {}
+  expense_platform_pgdata: {}
+  redisdata: {}
+  mlflow_artifacts: {}
