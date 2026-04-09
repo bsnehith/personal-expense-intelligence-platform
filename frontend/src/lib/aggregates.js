@@ -110,3 +110,56 @@ export function suggestedBudgets(transactions) {
     }),
   )
 }
+
+export function weekdaySpendData(transactions) {
+  const labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const rows = labels.map((label, index) => ({
+    weekday: label,
+    weekdayIndex: index,
+    spend: 0,
+    count: 0,
+    avg: 0,
+  }))
+
+  for (const t of transactions) {
+    if (t.debit_credit === 'credit') continue
+    const d = new Date(t.date)
+    if (Number.isNaN(d.getTime())) continue
+    const idx = d.getDay()
+    rows[idx].spend += Number(t.amount) || 0
+    rows[idx].count += 1
+  }
+
+  for (const row of rows) {
+    row.avg = row.count ? row.spend / row.count : 0
+  }
+  return rows
+}
+
+export function confidenceTrendData(transactions, daysBack = 30) {
+  const now = Date.now()
+  const cutoff = now - daysBack * 86400000
+  const byDay = new Map()
+
+  for (const t of transactions) {
+    if (t.debit_credit === 'credit') continue
+    const ts = new Date(t.date).getTime()
+    if (!Number.isFinite(ts) || ts < cutoff) continue
+    const key = new Date(ts).toISOString().slice(0, 10)
+    const prev = byDay.get(key) ?? { day: key, confidenceSum: 0, count: 0, spend: 0 }
+    const conf = Number(t.confidence)
+    prev.confidenceSum += Number.isFinite(conf) ? conf : 0
+    prev.count += 1
+    prev.spend += Number(t.amount) || 0
+    byDay.set(key, prev)
+  }
+
+  return [...byDay.values()]
+    .sort((a, b) => (a.day < b.day ? -1 : 1))
+    .map((r) => ({
+      day: r.day.slice(5),
+      confidence: r.count ? r.confidenceSum / r.count : 0,
+      spend: r.spend,
+      txCount: r.count,
+    }))
+}

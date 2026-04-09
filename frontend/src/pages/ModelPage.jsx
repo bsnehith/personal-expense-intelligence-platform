@@ -9,6 +9,7 @@ import PageHeader from '../components/ui/PageHeader'
 export default function ModelPage() {
   const { modelInfo, correctionsTotal, updateModelAfterRetrain } = useAppState()
   const [busy, setBusy] = useState(false)
+  const [busyBestFit, setBusyBestFit] = useState(false)
   const [msg, setMsg] = useState(null)
 
   const heat = modelInfo.confusionMatrix ?? []
@@ -19,13 +20,27 @@ export default function ModelPage() {
     setBusy(true)
     setMsg(null)
     try {
-      await postTriggerRetrain()
+      await postTriggerRetrain('fast')
       updateModelAfterRetrain()
       setMsg('Retrain job queued — model info will refresh shortly.')
     } catch (e) {
       setMsg(e.message ?? 'Retrain failed')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const triggerBestFit = async () => {
+    setBusyBestFit(true)
+    setMsg(null)
+    try {
+      await postTriggerRetrain('best_fit')
+      updateModelAfterRetrain()
+      setMsg('Best-fit retrain queued (all model families) — this may take longer.')
+    } catch (e) {
+      setMsg(e.message ?? 'Best-fit retrain failed')
+    } finally {
+      setBusyBestFit(false)
     }
   }
 
@@ -42,15 +57,26 @@ export default function ModelPage() {
         }
       >
         {API_BASE && (
-          <button
-            type="button"
-            onClick={trigger}
-            disabled={busy}
-            className="btn-ghost rounded-2xl border-sky-400/40 bg-sky-500/15 py-3 font-bold text-sky-900 hover:bg-sky-500/25 disabled:opacity-50 dark:border-sky-400/30 dark:bg-sky-500/10 dark:text-sky-100 dark:hover:bg-sky-500/20"
-          >
-            <RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
-            {busy ? 'Queuing…' : 'Trigger retrain'}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={trigger}
+              disabled={busy || busyBestFit}
+              className="btn-ghost rounded-2xl border-sky-400/40 bg-sky-500/15 py-3 font-bold text-sky-900 hover:bg-sky-500/25 disabled:opacity-50 dark:border-sky-400/30 dark:bg-sky-500/10 dark:text-sky-100 dark:hover:bg-sky-500/20"
+            >
+              <RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />
+              {busy ? 'Queuing…' : 'Fast retrain'}
+            </button>
+            <button
+              type="button"
+              onClick={triggerBestFit}
+              disabled={busyBestFit || busy}
+              className="btn-ghost rounded-2xl border-violet-400/45 bg-violet-500/15 py-3 font-bold text-violet-900 hover:bg-violet-500/25 disabled:opacity-50 dark:border-violet-400/30 dark:bg-violet-500/10 dark:text-violet-100 dark:hover:bg-violet-500/20"
+            >
+              <RefreshCw className={`h-4 w-4 ${busyBestFit ? 'animate-spin' : ''}`} />
+              {busyBestFit ? 'Queuing…' : 'Best-fit retrain'}
+            </button>
+          </div>
         )}
       </PageHeader>
 

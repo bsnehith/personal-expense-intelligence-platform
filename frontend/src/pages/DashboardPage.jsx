@@ -1,21 +1,25 @@
 import { useMemo, useState } from 'react'
 import { useThrottledValue } from '../hooks/useThrottledValue'
 import {
+  BarChart3,
   Calendar,
   ChartPie,
   Gauge,
   LineChart as LineChartIcon,
   ListTree,
+  ShieldCheck,
   Store,
 } from 'lucide-react'
 import { useAppState } from '../context/AppStateContext'
 import {
+  confidenceTrendData,
   currentMonthSpendByCategory,
   dailySpendSeries,
   donutData,
   monthlyStackData,
   suggestedBudgets,
   topMerchants,
+  weekdaySpendData,
 } from '../lib/aggregates'
 import { CATEGORY_BY_ID } from '../lib/categories'
 import { formatCurrency, formatDateTime } from '../lib/format'
@@ -24,6 +28,8 @@ import MonthlySpendChart from '../components/charts/MonthlySpendChart'
 import DailyTimelineChart from '../components/charts/DailyTimelineChart'
 import TopMerchants from '../components/charts/TopMerchants'
 import BudgetBars from '../components/charts/BudgetBars'
+import WeekdaySpendChart from '../components/charts/WeekdaySpendChart'
+import ConfidenceTrendChart from '../components/charts/ConfidenceTrendChart'
 import CategoryBadge from '../components/CategoryBadge'
 import PageHeader from '../components/ui/PageHeader'
 
@@ -54,6 +60,8 @@ export default function DashboardPage() {
   const { transactions } = useAppState()
   const chartTransactions = useThrottledValue(transactions, 280)
   const [activeCategory, setActiveCategory] = useState(null)
+  const [activeWeekday, setActiveWeekday] = useState(null)
+  const [confidenceWindow, setConfidenceWindow] = useState(30)
 
   const debitTx = useMemo(
     () => chartTransactions.filter((t) => t.debit_credit !== 'credit'),
@@ -66,6 +74,11 @@ export default function DashboardPage() {
   const merchants = useMemo(() => topMerchants(debitTx, 10), [debitTx])
   const budgets = useMemo(() => suggestedBudgets(debitTx), [debitTx])
   const monthSpend = useMemo(() => currentMonthSpendByCategory(debitTx), [debitTx])
+  const weekdaySpend = useMemo(() => weekdaySpendData(debitTx), [debitTx])
+  const confidenceTrend = useMemo(
+    () => confidenceTrendData(debitTx, confidenceWindow),
+    [debitTx, confidenceWindow],
+  )
 
   const drilldown = useMemo(() => {
     if (!activeCategory) return []
@@ -73,6 +86,21 @@ export default function DashboardPage() {
   }, [debitTx, activeCategory])
 
   const activeLabel = activeCategory ? CATEGORY_BY_ID[activeCategory]?.label ?? activeCategory : null
+  const activeWeekdayLabel = useMemo(
+    () => weekdaySpend.find((d) => d.weekdayIndex === activeWeekday)?.weekday ?? null,
+    [weekdaySpend, activeWeekday],
+  )
+  const weekdayFiltered = useMemo(() => {
+    if (activeWeekday == null) return debitTx
+    return debitTx.filter((t) => {
+      const d = new Date(t.date)
+      return !Number.isNaN(d.getTime()) && d.getDay() === activeWeekday
+    })
+  }, [debitTx, activeWeekday])
+  const weekdayTotal = useMemo(
+    () => weekdayFiltered.reduce((sum, t) => sum + (Number(t.amount) || 0), 0),
+    [weekdayFiltered],
+  )
 
   return (
     <div className="space-y-10">
@@ -157,6 +185,56 @@ export default function DashboardPage() {
       >
         <BudgetBars spentByCategory={monthSpend} budgetByCategory={budgets} />
       </Panel>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Panel
+          icon={BarChart3}
+          title={activeWeekdayLabel ? `Weekday spend · ${activeWeekdayLabel}` : 'Weekday spend pattern'}
+          subtitle="Tap a bar to filter the weekly pattern; tap again to reset"
+          interactive
+        >
+          <WeekdaySpendChart
+            data={weekdaySpend}
+            activeWeekday={activeWeekday}
+            onSelectWeekday={(idx) => setActiveWeekday((curr) => (curr === idx ? null : idx))}
+          />
+          <div className="mt-4 flex items-center justify-between rounded-xl border border-theme-subtle bg-surface-muted/40 px-3 py-2 text-xs text-content-muted">
+            <span>
+              {activeWeekdayLabel
+                ? `Filtered transactions for ${activeWeekdayLabel}`
+                : 'All weekdays combined'}
+            </span>
+            <span className="font-semibold text-content">
+              {weekdayFiltered.length} txns · {formatCurrency(weekdayTotal)}
+            </span>
+          </div>
+        </Panel>
+
+        <Panel
+          icon={ShieldCheck}
+          title="Model confidence trend"
+          subtitle="Daily average confidence from classified transactions"
+          interactive
+        >
+          <div className="mb-3 flex flex-wrap gap-2">
+            {[30, 60, 90].map((days) => (
+              <button
+                key={days}
+                type="button"
+                className={`btn-ghost rounded-lg px-3 py-1.5 text-xs ${
+                  confidenceWindow === days
+                    ? 'border-sky-400/50 bg-sky-500/15 text-sky-100'
+                    : ''
+                }`}
+                onClick={() => setConfidenceWindow(days)}
+              >
+                {days}d
+              </button>
+            ))}
+          </div>
+          <ConfidenceTrendChart data={confidenceTrend} />
+        </Panel>
+      </div>
 
       <section className="glass-panel-muted">
         <h2 className="flex items-center gap-2 text-sm font-bold text-content">

@@ -52,13 +52,25 @@ _REPO_ROOT = _SVC_ROOT.parent
 
 clf: Classifier | None = None
 _consumer_task: asyncio.Task | None = None
+_retrain_lock = threading.Lock()
+_retrain_state_lock = threading.Lock()
+_retrain_state: dict[str, str | bool | None] = {
+    "in_progress": False,
+    "started_at": None,
+    "finished_at": None,
+    "last_status": "idle",
+    "last_error": None,
+    "mode": None,
+}
 
 
-def _train_cmd(csv: Path | None) -> list[str]:
+def _train_cmd(csv: Path | None, force_all_models: bool = False) -> list[str]:
     cmd = [sys.executable, "-m", "model.train", "--out", str(MODEL_DIR)]
     if csv is not None and csv.is_file():
         cmd.extend(["--data", str(csv)])
-    if os.environ.get("USE_ALL_MODELS") == "1":
+    if force_all_models:
+        cmd.append("--all-models")
+    elif os.environ.get("USE_ALL_MODELS") == "1":
         cmd.append("--all-models")
     elif os.environ.get("USE_ENSEMBLE") == "1":
         cmd.append("--ensemble")
@@ -283,6 +295,61 @@ def _maybe_retrain_async(total_corrections: int) -> None:
         threading.Thread(target=_run, daemon=True).start()
 
 
+def _set_retrain_state(**kwargs) -> None:
+    with _retrain_state_lock:
+        _retrain_state.update(kwargs)
+
+
+def _snapshot_retrain_state() -> dict[str, str | bool | None]:
+    with _retrain_state_lock:
+        return dict(_retrain_state)
+
+
+def _launch_retrain_background(mode: str = "fast") -> bool:
+    """Start retraining in a background thread. Returns False if already running."""
+    if not _retrain_lock.acquire(blocking=False):
+        return False
+
+    normalized_mode = "best_fit" if str(mode).strip().lower() in {"best", "best_fit", "best-fit"} else "fast"
+    _set_retrain_state(
+        in_progress=True,
+        started_at=datetime.utcnow().isoformat() + "Z",
+        finished_at=None,
+        last_status="running",
+        last_error=None,
+        mode=normalized_mode,
+    )
+
+    def _run() -> None:
+        global clf
+        try:
+            csv = DATA_DIR / "transactions_train.csv"
+            cmd = _train_cmd(
+                csv if csv.is_file() else None,
+                force_all_models=(normalized_mode == "best_fit"),
+            )
+            subprocess.run(cmd, check=True, cwd=str(Path(__file__).resolve().parent))
+            clf = load_classifier(MODEL_DIR)
+            meta_path = MODEL_DIR / "metadata.json"
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                model_accuracy_current.set(float(meta.get("eval_accuracy", 0)))
+            _set_retrain_state(last_status="succeeded", last_error=None)
+        except subprocess.CalledProcessError as exc:
+            _set_retrain_state(last_status="failed", last_error=f"Retrain failed: {exc}")
+        except Exception as exc:  # pragma: no cover - defensive guard
+            _set_retrain_state(last_status="failed", last_error=str(exc))
+        finally:
+            _set_retrain_state(
+                in_progress=False,
+                finished_at=datetime.utcnow().isoformat() + "Z",
+            )
+            _retrain_lock.release()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await asyncio.to_thread(_maybe_train_on_boot)
@@ -410,20 +477,27 @@ def correct(body: CorrectIn):
 
 
 @app.post("/retrain")
-def retrain():
-    csv = DATA_DIR / "transactions_train.csv"
-    cmd = _train_cmd(csv if csv.is_file() else None)
-    try:
-        subprocess.run(cmd, check=True, cwd=str(Path(__file__).resolve().parent))
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Retrain failed: {e}") from e
-    global clf
-    clf = load_classifier(MODEL_DIR)
-    meta_path = MODEL_DIR / "metadata.json"
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        model_accuracy_current.set(float(meta.get("eval_accuracy", 0)))
-    return {"ok": True, "message": "Retrained and reloaded"}
+def retrain(mode: str = "fast"):
+    requested_mode = str(mode).strip().lower()
+    if requested_mode not in {"fast", "best_fit", "best-fit", "best"}:
+        raise HTTPException(status_code=400, detail="mode must be 'fast' or 'best_fit'")
+    started = _launch_retrain_background(mode=requested_mode)
+    if not started:
+        st = _snapshot_retrain_state()
+        return {
+            "ok": True,
+            "queued": False,
+            "in_progress": bool(st.get("in_progress")),
+            "mode": st.get("mode"),
+            "message": "Retrain already running",
+        }
+    return {
+        "ok": True,
+        "queued": True,
+        "in_progress": True,
+        "mode": "best_fit" if requested_mode in {"best", "best_fit", "best-fit"} else "fast",
+        "message": "Retrain started in background",
+    }
 
 
 @app.post("/anomaly-action")
@@ -465,4 +539,5 @@ def model_info():
         "last_retrained": meta.get("last_trained_at") or meta.get("last_retrained"),
         "confusionMatrix": heat,
         "correctionCounts": stats.get("by_category", {}),
+        "retrainStatus": _snapshot_retrain_state(),
     }

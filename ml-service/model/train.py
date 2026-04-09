@@ -162,16 +162,29 @@ def train_tfidf(df: pd.DataFrame, random_state: int = 42):
                 ]
             ),
         ),
-        (
-            "tfidf_mlp",
-            Pipeline(
-                [
-                    ("tfidf", TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=1)),
-                    ("clf", MLPClassifier(hidden_layer_sizes=(256,), max_iter=80, random_state=random_state)),
-                ]
-            ),
-        ),
     ]
+    # Keep retrains fast by default; MLP can be enabled for offline experiments.
+    if os.environ.get("TRAIN_ENABLE_MLP", "0") == "1":
+        candidates.append(
+            (
+                "tfidf_mlp",
+                Pipeline(
+                    [
+                        ("tfidf", TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=1)),
+                        (
+                            "clf",
+                            MLPClassifier(
+                                hidden_layer_sizes=(256,),
+                                max_iter=60,
+                                early_stopping=True,
+                                n_iter_no_change=5,
+                                random_state=random_state,
+                            ),
+                        ),
+                    ]
+                ),
+            )
+        )
 
     best_name = ""
     best_model = None

@@ -201,9 +201,9 @@ async def anomaly_action(request: Request):
 
 
 @app.post("/retrain")
-async def retrain():
+async def retrain(mode: str = "fast"):
     async with httpx.AsyncClient() as client:
-        r = await client.post(f"{ML_URL}/retrain", timeout=600.0)
+        r = await client.post(f"{ML_URL}/retrain", params={"mode": mode}, timeout=600.0)
         return JSONResponse(r.json(), status_code=r.status_code)
 
 

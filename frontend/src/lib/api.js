@@ -42,9 +42,16 @@ export async function postAnomalyAction(txnId, action, note = '') {
 
 // ── Retrain ───────────────────────────────────────────────────────────────────
 
-export async function postTriggerRetrain() {
+export async function postTriggerRetrain(mode = 'fast') {
   if (!API_BASE) throw new Error('VITE_API_BASE_URL is not set')
-  return post('/retrain', {})
+  const m = mode === 'best_fit' ? 'best_fit' : 'fast'
+  const res = await fetch(`${API_BASE}/retrain?mode=${encodeURIComponent(m)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
 }
 
 // ── Model info ────────────────────────────────────────────────────────────────
