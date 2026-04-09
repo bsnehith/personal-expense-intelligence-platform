@@ -1,6 +1,7 @@
 """Gemini streaming + deterministic fallback."""
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
@@ -22,6 +23,9 @@ except ImportError:  # pragma: no cover
 _SERVICE_ROOT = Path(__file__).resolve().parent
 load_dotenv(_SERVICE_ROOT / ".env", override=False)
 load_dotenv(_SERVICE_ROOT.parent / ".env", override=False)
+
+_RETRY_ATTEMPTS = max(1, int(os.environ.get("GEMINI_RETRY_ATTEMPTS", "3")))
+_RETRY_BASE_DELAY_SEC = max(0.2, float(os.environ.get("GEMINI_RETRY_BASE_DELAY_SEC", "1.0")))
 
 
 def _client():
@@ -55,6 +59,33 @@ def _is_greeting(question: str) -> bool:
     }
 
 
+def _is_transient_genai_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    hints = (
+        "503",
+        "unavailable",
+        "high demand",
+        "resource_exhausted",
+        "429",
+        "rate",
+        "try again later",
+    )
+    return any(h in msg for h in hints)
+
+
+async def _stream_via_gemini(client, model: str, text: str) -> AsyncIterator[str]:
+    stream_cm = client.aio.models.generate_content_stream(
+        model=model,
+        contents=text,
+        config=_gen_config(),
+    )
+    stream = await stream_cm if inspect.isawaitable(stream_cm) else stream_cm
+    async for chunk in stream:
+        tok = getattr(chunk, "text", None)
+        if tok:
+            yield tok
+
+
 async def stream_chat(question: str, transactions: list) -> AsyncIterator[str]:
     genai_coach_invocations.labels(endpoint="stream").inc()
     if _is_greeting(question):
@@ -79,22 +110,33 @@ async def stream_chat(question: str, transactions: list) -> AsyncIterator[str]:
                 first = False
             yield chunk
         return
-    try:
-        stream_cm = client.aio.models.generate_content_stream(
-            model=model,
-            contents=text,
-            config=_gen_config(),
-        )
-        stream = await stream_cm if inspect.isawaitable(stream_cm) else stream_cm
-        async for chunk in stream:
-            t = getattr(chunk, "text", None)
-            if t:
+    last_error: Exception | None = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            async for t in _stream_via_gemini(client, model, text):
                 if first:
                     genai_coach_first_token_ms.observe((time.perf_counter() - t0) * 1000)
                     first = False
                 yield t
-    except Exception as e:
-        yield f"\n[coach error: {e}]\n"
+            return
+        except Exception as e:
+            last_error = e
+            if _is_transient_genai_error(e) and attempt < _RETRY_ATTEMPTS:
+                await asyncio.sleep(_RETRY_BASE_DELAY_SEC * attempt)
+                continue
+            break
+
+    # Graceful fallback for temporary provider outages; avoid leaking raw stack/error JSON to UI.
+    if first:
+        genai_coach_first_token_ms.observe((time.perf_counter() - t0) * 1000)
+    fallback_msg = (
+        "The AI coach is temporarily busy right now. "
+        "I can still help with a quick rule-based summary, or you can retry in a minute."
+    )
+    for i in range(0, len(fallback_msg), 24):
+        yield fallback_msg[i : i + 24]
+    if last_error and not _is_transient_genai_error(last_error):
+        yield " (non-transient provider error)"
 
 
 async def stream_statement_summary(
@@ -114,22 +156,35 @@ async def stream_statement_summary(
                 first = False
             yield chunk
         return
-    try:
-        stream_cm = client.aio.models.generate_content_stream(
-            model=model,
-            contents=text,
-            config=_gen_config(),
-        )
-        stream = await stream_cm if inspect.isawaitable(stream_cm) else stream_cm
-        async for chunk in stream:
-            t = getattr(chunk, "text", None)
-            if t:
+    last_error: Exception | None = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            async for t in _stream_via_gemini(client, model, text):
                 if first:
                     genai_coach_first_token_ms.observe((time.perf_counter() - t0) * 1000)
                     first = False
                 yield t
-    except Exception as e:
-        yield f"\n[coach error: {e}]\n"
+            return
+        except Exception as e:
+            last_error = e
+            if _is_transient_genai_error(e) and attempt < _RETRY_ATTEMPTS:
+                await asyncio.sleep(_RETRY_BASE_DELAY_SEC * attempt)
+                continue
+            break
+
+    if first:
+        genai_coach_first_token_ms.observe((time.perf_counter() - t0) * 1000)
+    # Statement-specific fallback keeps UX useful when provider is overloaded.
+    total = sum(float(t.get("amount") or 0) for t in transactions)
+    msg = (
+        f"[Temporary AI provider overload] Parsed {len(transactions)} transactions from "
+        f"{source_file or 'your statement'} with approx ₹{total:,.0f} total spend. "
+        "Please retry in 1-2 minutes for full GenAI insights."
+    )
+    for i in range(0, len(msg), 26):
+        yield msg[i : i + 26]
+    if last_error and not _is_transient_genai_error(last_error):
+        yield " (non-transient provider error)"
 
 
 async def stream_monthly_summary(
@@ -149,22 +204,29 @@ async def stream_monthly_summary(
                 first = False
             yield chunk
         return
-    try:
-        stream_cm = client.aio.models.generate_content_stream(
-            model=model,
-            contents=text,
-            config=_gen_config(),
-        )
-        stream = await stream_cm if inspect.isawaitable(stream_cm) else stream_cm
-        async for chunk in stream:
-            t = getattr(chunk, "text", None)
-            if t:
+    last_error: Exception | None = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            async for t in _stream_via_gemini(client, model, text):
                 if first:
                     genai_coach_first_token_ms.observe((time.perf_counter() - t0) * 1000)
                     first = False
                 yield t
-    except Exception as e:
-        yield f"\n[coach error: {e}]\n"
+            return
+        except Exception as e:
+            last_error = e
+            if _is_transient_genai_error(e) and attempt < _RETRY_ATTEMPTS:
+                await asyncio.sleep(_RETRY_BASE_DELAY_SEC * attempt)
+                continue
+            break
+
+    if first:
+        genai_coach_first_token_ms.observe((time.perf_counter() - t0) * 1000)
+    fallback = _fallback_monthly(transactions)
+    for i in range(0, len(fallback), 24):
+        yield fallback[i : i + 24]
+    if last_error and not _is_transient_genai_error(last_error):
+        yield " (non-transient provider error)"
 
 
 async def monthly_json(transactions: list[dict[str, Any]]) -> dict[str, Any]:

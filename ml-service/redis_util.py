@@ -12,6 +12,8 @@ except ImportError:
     redis_lib = None
 
 _redis = None
+_warned_no_redis = False
+_warned_push_error = False
 
 
 def client():
@@ -27,18 +29,30 @@ def client():
 
 
 def push_upload_result(session_id: str, payload: dict[str, Any]) -> None:
+    global _warned_no_redis, _warned_push_error
     r = client()
     if r is None:
-        print(
-            "[ml-service] REDIS unavailable — cannot push upload result "
-            f"(upload_session_id={session_id}). Set REDIS_URL or disable Kafka upload path.",
-            file=sys.stderr,
-            flush=True,
-        )
+        if not _warned_no_redis:
+            print(
+                "[ml-service] REDIS unavailable — cannot push upload results. "
+                "Set REDIS_URL or disable Kafka upload path.",
+                file=sys.stderr,
+                flush=True,
+            )
+            _warned_no_redis = True
         return
     key = f"upload:queue:{session_id}"
-    r.rpush(key, json.dumps(payload, default=str))
-    r.expire(key, 3600)
+    try:
+        r.rpush(key, json.dumps(payload, default=str))
+        r.expire(key, 3600)
+    except Exception as exc:
+        if not _warned_push_error:
+            print(
+                f"[ml-service] REDIS push failed ({exc}). Upload queue events are skipped.",
+                file=sys.stderr,
+                flush=True,
+            )
+            _warned_push_error = True
 
 
 def blpop_upload(session_id: str, timeout: int = 180) -> dict[str, Any] | None:
