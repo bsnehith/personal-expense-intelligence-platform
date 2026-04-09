@@ -59,17 +59,20 @@ That comes from the **Docker engine on Windows**, not this repo. Restart Docker 
 python scripts/generate_training_data.py   # → data/transactions_train.csv
 ```
 
-- **Default boot model:** fast TF‑IDF (`USE_ENSEMBLE=0`).  
-- **Ensemble (TF‑IDF + MiniLM + meta‑LR):** set `USE_ENSEMBLE=1` (slow first train; downloads MiniLM).  
+- **Best-accuracy mode (recommended):** set `USE_ALL_MODELS=1` or pass `--all-models` to train TF‑IDF, embedding, and ensemble families, then persist the top model by weighted F1.  
+- **Default boot model:** fast TF‑IDF (`USE_ENSEMBLE=0`, `USE_ALL_MODELS=0`).  
+- **Ensemble only (TF‑IDF + MiniLM + meta‑LR):** set `USE_ENSEMBLE=1` (slow first train; downloads MiniLM).  
 - **Retraining:** `POST /retrain` or automatic every **50** corrections (`RETRAIN_CORRECTION_THRESHOLD`).  
 - **MLflow:** training logs to `MLFLOW_TRACKING_URI` when set (Docker: `http://mlflow:5000`).
+- **Curated real+synthetic split helper:** `python scripts/build_curated_datasets.py ...` (outputs train + held-out gold + summary JSON including optional inter-rater kappa).
 
 ## Environment (`.env`)
 
 See `.env.example`. Important keys:
 
 - `GEMINI_API_KEY`, `GEMINI_MODEL`  
-- `USE_ENSEMBLE`, `USE_EMBEDDING_MODEL`  
+- `USE_ALL_MODELS`, `USE_ENSEMBLE`, `USE_EMBEDDING_MODEL`  
+- `MONTHLY_AUTO_REVIEW_ENABLED`, `MONTHLY_AUTO_REVIEW_USER_ID`  
 - `RETRAIN_CORRECTION_THRESHOLD`  
 - `TX_INTERVAL_SEC` (simulator; use `0.1` for ~10 tx/sec load tests)  
 - User corrections append labelled rows to `data/correction_supplement.csv` (merged on retrain) when `POST /correct` includes transaction fields or Postgres has the txn payload.  
@@ -86,6 +89,7 @@ When **Kafka + Redis** are available (default in Compose): each statement row is
 Prometheus scrapes: `api-gateway:8000`, `ml-service:8001`, `parser-service:8002`, `genai-service:8003`.  
 Grafana (http://localhost:3001) auto-loads three starter dashboards from `observability/grafana/dashboards/` (categorisation performance, pipeline health, anomaly + GenAI).  
 Loki is provisioned as a datasource; `promtail` in `docker-compose.yml` ships container logs for search in Grafana Explore.
+Alert rules are defined in `observability/alerts.yml` (latency, confidence, parse success, model accuracy, consumer lag).
 
 ## Tests
 
@@ -104,10 +108,14 @@ Project-level tests live in `tests/` and validate required contracts (endpoints,
 - Model Card: `docs/MODEL_CARD.md`
 - Data Collection Report: `docs/DATA_COLLECTION_REPORT.md`
 - Architecture note: `docs/ARCHITECTURE.md`
-- Notebook workspace: `notebooks/README.md`
+- Notebook workspace: `notebooks/README.md` and `notebooks/model_training_evaluation.ipynb`
 
-If your assessor requires a PNG specifically, export your final diagram as `docs/architecture.png`.
+If your assessor requires a PNG specifically at `docs/architecture.png`, run:
+
+```bash
+python scripts/prepare_demo_assets.py
+```
 
 ## API contract (frontend)
 
-Matches `frontend/src/lib/api.js`: `/feed/stream`, `/upload`, `/correct`, `/retrain`, `/model-info`, `/coach/stream`, `/coach/monthly`, `/coach/statement` (SSE statement summary after upload).
+Matches `frontend/src/lib/api.js`: `/feed/stream`, `/upload`, `/correct`, `/anomaly-action`, `/retrain`, `/model-info`, `/coach/stream`, `/coach/monthly`, `/coach/statement`, `/coach/monthly/latest` (backend auto monthly cache).

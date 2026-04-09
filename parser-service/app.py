@@ -39,22 +39,45 @@ statement_parse_success_rate = Gauge(
     "statement_parse_success_rate",
     "Ratio of successful uploads (cumulative since start)",
 )
+statement_parse_latency_ms_by_format = Histogram(
+    "statement_parse_latency_ms_by_format",
+    "Parse + categorise latency by statement format",
+    ["format"],
+    buckets=(500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 120000),
+)
+statement_parse_success_rate_by_format = Gauge(
+    "statement_parse_success_rate_by_format",
+    "Cumulative parse success ratio split by statement format",
+    ["format"],
+)
 _parse_lock = threading.Lock()
 _parse_ok = 0
 _parse_total = 0
+_parse_by_fmt: dict[str, dict[str, int]] = {}
 
 
-def _observe_parse_outcome(success: bool) -> None:
-    global _parse_ok, _parse_total
+def _observe_parse_outcome(success: bool, fmt: str) -> None:
+    global _parse_ok, _parse_total, _parse_by_fmt
+    f = (fmt or "unknown").lower()
     with _parse_lock:
         _parse_total += 1
         if success:
             _parse_ok += 1
         statement_parse_success_rate.set(_parse_ok / max(_parse_total, 1))
+        stats = _parse_by_fmt.get(f, {"ok": 0, "total": 0})
+        stats["total"] += 1
+        if success:
+            stats["ok"] += 1
+        _parse_by_fmt[f] = stats
+        statement_parse_success_rate_by_format.labels(format=f).set(
+            stats["ok"] / max(stats["total"], 1)
+        )
 
 
-def _observe_parse_latency_ms(t0: float) -> None:
-    statement_parse_latency_ms.observe((time.perf_counter() - t0) * 1000)
+def _observe_parse_latency_ms(t0: float, fmt: str) -> None:
+    elapsed = (time.perf_counter() - t0) * 1000
+    statement_parse_latency_ms.observe(elapsed)
+    statement_parse_latency_ms_by_format.labels(format=(fmt or "unknown").lower()).observe(elapsed)
 
 
 app = FastAPI(title="Parser Service")
@@ -168,8 +191,8 @@ async def parse_upload(file: UploadFile = File(...)):
                     "Please re-save/export as .xlsx or CSV and upload again."
                 )
             yield _sse({"step": "error", "label": msg, "done": 0, "total": 0})
-            _observe_parse_latency_ms(t0)
-            _observe_parse_outcome(False)
+            _observe_parse_latency_ms(t0, fmt)
+            _observe_parse_outcome(False, fmt)
             return
 
         if not raw_rows:
@@ -181,8 +204,8 @@ async def parse_upload(file: UploadFile = File(...)):
                     "total": 0,
                 }
             )
-            _observe_parse_latency_ms(t0)
-            _observe_parse_outcome(False)
+            _observe_parse_latency_ms(t0, fmt)
+            _observe_parse_outcome(False, fmt)
             return
 
         total = len(raw_rows)
@@ -238,8 +261,8 @@ async def parse_upload(file: UploadFile = File(...)):
                             "total": total,
                         }
                     )
-                    _observe_parse_latency_ms(t0)
-                    _observe_parse_outcome(False)
+                    _observe_parse_latency_ms(t0, fmt)
+                    _observe_parse_outcome(False, fmt)
                     return
                 _, raw = item
                 enriched = json.loads(raw)
@@ -281,8 +304,8 @@ async def parse_upload(file: UploadFile = File(...)):
                                     "total": total,
                                 }
                             )
-                            _observe_parse_latency_ms(t0)
-                            _observe_parse_outcome(False)
+                            _observe_parse_latency_ms(t0, fmt)
+                            _observe_parse_outcome(False, fmt)
                             return
                         enriched_list.extend(part)
                         for i, enriched in enumerate(part):
@@ -304,8 +327,8 @@ async def parse_upload(file: UploadFile = File(...)):
                         "total": total,
                     }
                 )
-                _observe_parse_latency_ms(t0)
-                _observe_parse_outcome(False)
+                _observe_parse_latency_ms(t0, fmt)
+                _observe_parse_outcome(False, fmt)
                 return
             if len(enriched_list) != total:
                 yield _sse(
@@ -316,8 +339,8 @@ async def parse_upload(file: UploadFile = File(...)):
                         "total": total,
                     }
                 )
-                _observe_parse_latency_ms(t0)
-                _observe_parse_outcome(False)
+                _observe_parse_latency_ms(t0, fmt)
+                _observe_parse_outcome(False, fmt)
                 return
         else:
             async with httpx.AsyncClient() as client:
@@ -333,8 +356,8 @@ async def parse_upload(file: UploadFile = File(...)):
                                 "total": total,
                             }
                         )
-                        _observe_parse_latency_ms(t0)
-                        _observe_parse_outcome(False)
+                        _observe_parse_latency_ms(t0, fmt)
+                        _observe_parse_outcome(False, fmt)
                         return
                     yield _sse(
                         {
@@ -347,8 +370,8 @@ async def parse_upload(file: UploadFile = File(...)):
                     )
 
         yield _sse({"step": "done", "label": "Done", "done": total, "total": total})
-        _observe_parse_latency_ms(t0)
-        _observe_parse_outcome(True)
+        _observe_parse_latency_ms(t0, fmt)
+        _observe_parse_outcome(True, fmt)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

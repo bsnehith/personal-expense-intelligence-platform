@@ -35,6 +35,11 @@ export async function postCorrectCategory(txnId, correctCategory, txnSnapshot = 
   return post('/correct', body)
 }
 
+export async function postAnomalyAction(txnId, action, note = '') {
+  if (!API_BASE) throw new Error('VITE_API_BASE_URL is not set')
+  return post('/anomaly-action', { txn_id: txnId, action, note })
+}
+
 // ── Retrain ───────────────────────────────────────────────────────────────────
 
 export async function postTriggerRetrain() {

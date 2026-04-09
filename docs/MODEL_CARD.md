@@ -42,6 +42,7 @@
 - `eval_accuracy`
 - `eval_f1_weighted`
 - confusion matrix
+- per-category classification report (precision/recall/f1/support)
 - optional gold-set metrics:
   - `gold_eval_accuracy`
   - `gold_eval_f1_weighted`
@@ -52,6 +53,7 @@
   - `gold_eval_accuracy` if gold set exists.
   - otherwise fallback to `eval_accuracy`.
 - MLflow registry promotion can be automated when enabled.
+- In `USE_ALL_MODELS=1`, trainer benchmarks TF-IDF, embedding, and ensemble families and promotes the best model by weighted F1.
 
 ## Online Learning
 - Corrections are written via `POST /correct`.

@@ -14,7 +14,15 @@ def test_parser_and_gateway_endpoints_present():
     parser_text = (ROOT / "parser-service" / "app.py").read_text(encoding="utf-8")
     gateway_text = (ROOT / "api-gateway" / "main.py").read_text(encoding="utf-8")
     assert "/parse" in parser_text
-    for endpoint in ["/upload", "/feed/stream", "/coach/stream", "/coach/monthly/stream", "/coach/statement"]:
+    for endpoint in [
+        "/upload",
+        "/feed/stream",
+        "/coach/stream",
+        "/coach/monthly/stream",
+        "/coach/statement",
+        "/coach/monthly/latest",
+        "/anomaly-action",
+    ]:
         assert endpoint in gateway_text, f"Missing gateway endpoint: {endpoint}"
 
 

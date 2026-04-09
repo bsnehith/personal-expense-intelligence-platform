@@ -192,6 +192,14 @@ async def correct(request: Request):
         return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.post("/anomaly-action")
+async def anomaly_action(request: Request):
+    body = await request.json()
+    async with httpx.AsyncClient() as client:
+        r = await client.post(f"{ML_URL}/anomaly-action", json=body, timeout=60.0)
+        return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.post("/retrain")
 async def retrain():
     async with httpx.AsyncClient() as client:
@@ -203,6 +211,13 @@ async def retrain():
 async def model_info():
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{ML_URL}/model-info", timeout=30.0)
+        return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/coach/monthly/latest")
+async def coach_monthly_latest(user_id: str = "default"):
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{GENAI_URL}/coach/monthly/latest", params={"user_id": user_id}, timeout=30.0)
         return JSONResponse(r.json(), status_code=r.status_code)
 
 

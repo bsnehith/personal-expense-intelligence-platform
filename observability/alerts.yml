@@ -1,0 +1,74 @@
+groups:
+  - name: expense-platform-alerts
+    rules:
+      - alert: HighCategorisationLatencyP95
+        expr: histogram_quantile(0.95, sum(rate(categorisation_latency_ms_bucket[5m])) by (le)) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Categorisation latency p95 > 500ms"
+          description: "ML categorisation latency p95 exceeded 500ms for 5 minutes."
+
+      - alert: LowModelConfidenceMean
+        expr: (sum(rate(categorisation_confidence_sum[10m])) / sum(rate(categorisation_confidence_count[10m]))) < 0.75
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mean categorisation confidence < 0.75"
+          description: "Confidence dropped below expected threshold."
+
+      - alert: HighLowConfidenceRate
+        expr: low_confidence_rate > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low-confidence transaction rate > 20%"
+          description: "Too many transactions are flagged for review."
+
+      - alert: LowModelAccuracy
+        expr: model_accuracy_current < 0.80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model accuracy below target"
+          description: "Current model accuracy is below 0.80."
+
+      - alert: SlowStatementParsingP95
+        expr: histogram_quantile(0.95, sum(rate(statement_parse_latency_ms_bucket[10m])) by (le)) > 30000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Statement parse latency p95 > 30s"
+          description: "Statement parse and categorise flow is too slow."
+
+      - alert: LowStatementParseSuccess
+        expr: statement_parse_success_rate < 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Statement parse success rate < 90%"
+          description: "Upload parsing failures are above tolerance."
+
+      - alert: SlowGenAIFirstTokenP95
+        expr: histogram_quantile(0.95, sum(rate(genai_coach_first_token_ms_bucket[10m])) by (le)) > 3000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GenAI first token latency p95 > 3s"
+          description: "Coach responses are starting too slowly."
+
+      - alert: HighKafkaConsumerLag
+        expr: kafka_consumer_lag > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka consumer lag > 500"
+          description: "ML consumer is lagging behind incoming transaction flow."

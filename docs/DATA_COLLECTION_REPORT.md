@@ -23,6 +23,10 @@ Build a reproducible, balanced transaction dataset for 12-category expense class
 - Gold set should be manually reviewed for consistency before use.
 
 ## Split Policy
+- Curated split helper: `scripts/build_curated_datasets.py`
+  - Combines real/public + synthetic rows
+  - Produces `data/transactions_train_curated.csv`
+  - Produces held-out `data/transactions_gold_eval.csv` (default 300 rows)
 - Training pipeline performs internal train/validation split.
 - Gold evaluation set is held-out and excluded from fit data.
 - Promotion gate prefers gold-set metrics when available.
@@ -32,9 +36,11 @@ Build a reproducible, balanced transaction dataset for 12-category expense class
 - Remove duplicate combinations (`merchant_raw`, `amount`, `category`) during training load.
 - Track corrections by category to spot weak classes.
 - Maintain minimum examples per class (recommended >= 100).
+- Optional inter-rater agreement:
+  - Provide `--dual-label data/raw/gold_double_labeled.csv` with `label_a,label_b`
+  - Script computes Cohen's kappa and writes it to `data/data_collection_summary.json`
 
 ## Current Gaps to Track
-- Inter-rater agreement is not yet tracked in code; record manually if multiple annotators label gold set.
 - Add periodic audit of OCR-derived labels from scanned statements.
 
 ## Reproducibility

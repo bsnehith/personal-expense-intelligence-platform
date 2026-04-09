@@ -10,6 +10,7 @@ import {
 import {
   API_BASE,
   postCorrectCategory,
+  postAnomalyAction,
   subscribeToFeed,
   fetchModelInfo,
   checkGatewayHealth,
@@ -27,6 +28,30 @@ const EMPTY_MODEL_INFO = {
 }
 
 const AppStateContext = createContext(null)
+const NOOP = () => {}
+const NOOP_ASYNC = async () => {}
+const FALLBACK_STATE = {
+  transactions: [],
+  streamOn: false,
+  setStreamOn: NOOP,
+  parseJob: null,
+  startParseJob: NOOP,
+  updateParseJob: NOOP,
+  finishParseJob: NOOP,
+  toasts: [],
+  dismissToast: NOOP,
+  addTransaction: NOOP,
+  correctCategory: NOOP_ASYNC,
+  markAnomalyAction: NOOP_ASYNC,
+  modelInfo: EMPTY_MODEL_INFO,
+  setModelInfo: NOOP,
+  correctionsTotal: 0,
+  updateModelAfterRetrain: NOOP,
+  pushToast: NOOP,
+  gatewayReachable: false,
+  liveFeedMeta: null,
+  liveFeedReady: false,
+}
 
 export function AppStateProvider({ children }) {
   const [transactions, setTransactions] = useState([])
@@ -59,11 +84,21 @@ export function AppStateProvider({ children }) {
 
   const addTransaction = useCallback(
     (txn) => {
+      let shouldNotifyAnomaly = false
       setTransactions((prev) => {
-        const next = [txn, ...prev]
+        const existingIndex = prev.findIndex((t) => t.txn_id === txn.txn_id)
+        if (existingIndex === -1) {
+          shouldNotifyAnomaly = Boolean(txn.anomaly)
+          const next = [txn, ...prev]
+          return next.slice(0, MAX_FEED)
+        }
+
+        const current = prev[existingIndex]
+        const merged = { ...current, ...txn }
+        const next = [merged, ...prev.slice(0, existingIndex), ...prev.slice(existingIndex + 1)]
         return next.slice(0, MAX_FEED)
       })
-      if (txn.anomaly) {
+      if (shouldNotifyAnomaly) {
         pushToast({
           variant: 'anomaly',
           title: 'Anomaly detected',
@@ -104,13 +139,22 @@ export function AppStateProvider({ children }) {
     }
   }, [pushToast, transactions])
 
-  const markAnomalyAction = useCallback((txnId, action) => {
+  const markAnomalyAction = useCallback(async (txnId, action) => {
     setTransactions((prev) =>
       prev.map((t) =>
         t.txn_id === txnId ? { ...t, user_anomaly_action: action } : t,
       ),
     )
-  }, [])
+    try {
+      await postAnomalyAction(txnId, action)
+    } catch {
+      pushToast({
+        variant: 'error',
+        title: 'Anomaly action not synced',
+        body: 'Saved in UI only; backend unreachable.',
+      })
+    }
+  }, [pushToast])
 
   // Poll GET /health when VITE_API_BASE_URL is set (retries when Docker starts later)
   useEffect(() => {
@@ -292,6 +336,14 @@ export function AppStateProvider({ children }) {
 
 export function useAppState() {
   const ctx = useContext(AppStateContext)
-  if (!ctx) throw new Error('useAppState must be used within AppStateProvider')
+  if (!ctx) {
+    if (import.meta.env.DEV) {
+      console.warn(
+        'useAppState called outside AppStateProvider during hot-reload; returning safe fallback state.',
+      )
+      return FALLBACK_STATE
+    }
+    throw new Error('useAppState must be used within AppStateProvider')
+  }
   return ctx
 }

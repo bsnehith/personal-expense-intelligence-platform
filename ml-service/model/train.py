@@ -13,10 +13,14 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+from sklearn.metrics import classification_report
+from sklearn.naive_bayes import ComplementNB
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
+from sklearn.neural_network import MLPClassifier
 
 from .categories import CATEGORY_IDS, ID_TO_IDX
 from .merchant_clean import clean_merchant
@@ -105,66 +109,137 @@ def _eval_on_gold(model_obj: Any, mode: str, gold_csv: str | None) -> dict[str, 
     }
 
 
-def train_tfidf(df: pd.DataFrame, random_state: int = 42):
-    df = df[df["category"].isin(CATEGORY_IDS)].copy()
-    texts = df.apply(_build_text, axis=1).tolist()
-    y = df["category"].map(ID_TO_IDX).astype(int).values
+def _prepare_data(df: pd.DataFrame):
+    frame = df[df["category"].isin(CATEGORY_IDS)].copy()
+    texts = frame.apply(_build_text, axis=1).tolist()
+    y = frame["category"].map(ID_TO_IDX).astype(int).values
+    return texts, y
 
+
+def _train_test_split(texts: list[str], y: np.ndarray, random_state: int = 42):
     try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            texts, y, test_size=0.2, random_state=random_state, stratify=y
-        )
+        return train_test_split(texts, y, test_size=0.2, random_state=random_state, stratify=y)
     except ValueError:
-        X_train, X_test, y_train, y_test = train_test_split(
-            texts, y, test_size=0.2, random_state=random_state
-        )
+        return train_test_split(texts, y, test_size=0.2, random_state=random_state)
 
-    pipeline = Pipeline(
-        [
-            ("tfidf", TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=1)),
-            (
-                "clf",
-                LogisticRegression(max_iter=2000, class_weight="balanced", solver="saga"),
+
+def _score_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, Any]:
+    return {
+        "eval_accuracy": float(accuracy_score(y_true, y_pred)),
+        "eval_f1_weighted": float(f1_score(y_true, y_pred, average="weighted")),
+        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
+        "classification_report": classification_report(
+            y_true,
+            y_pred,
+            labels=list(range(len(CATEGORY_IDS))),
+            target_names=CATEGORY_IDS,
+            output_dict=True,
+            zero_division=0,
+        ),
+    }
+
+
+def train_tfidf(df: pd.DataFrame, random_state: int = 42):
+    texts, y = _prepare_data(df)
+    X_train, X_test, y_train, y_test = _train_test_split(texts, y, random_state=random_state)
+
+    candidates: list[tuple[str, Pipeline]] = [
+        (
+            "tfidf_lr",
+            Pipeline(
+                [
+                    ("tfidf", TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=1)),
+                    ("clf", LogisticRegression(max_iter=2000, class_weight="balanced", solver="saga")),
+                ]
             ),
-        ]
-    )
-    pipeline.fit(X_train, y_train)
-    pred = pipeline.predict(X_test)
-    acc = float(accuracy_score(y_test, pred))
-    f1 = float(f1_score(y_test, pred, average="weighted"))
-    cm = confusion_matrix(y_test, pred).tolist()
-    return pipeline, {"eval_accuracy": acc, "eval_f1_weighted": f1, "mode": "tfidf", "confusion_matrix": cm}
+        ),
+        (
+            "tfidf_nb",
+            Pipeline(
+                [
+                    ("tfidf", TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=1)),
+                    ("clf", ComplementNB(alpha=0.5)),
+                ]
+            ),
+        ),
+        (
+            "tfidf_mlp",
+            Pipeline(
+                [
+                    ("tfidf", TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=1)),
+                    ("clf", MLPClassifier(hidden_layer_sizes=(256,), max_iter=80, random_state=random_state)),
+                ]
+            ),
+        ),
+    ]
+
+    best_name = ""
+    best_model = None
+    best_metrics: dict[str, Any] | None = None
+    all_scores: dict[str, float] = {}
+    for name, model in candidates:
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+        metrics = _score_predictions(y_test, pred)
+        all_scores[name] = float(metrics["eval_f1_weighted"])
+        if best_metrics is None or metrics["eval_f1_weighted"] > best_metrics["eval_f1_weighted"]:
+            best_name = name
+            best_model = model
+            best_metrics = metrics
+
+    assert best_model is not None and best_metrics is not None
+    return best_model, {
+        **best_metrics,
+        "mode": "tfidf",
+        "selected_model": best_name,
+        "candidate_f1_weighted": all_scores,
+    }
 
 
 def train_embedding(df: pd.DataFrame, random_state: int = 42):
     if SentenceTransformer is None:
         raise RuntimeError("sentence-transformers not available")
-    df = df[df["category"].isin(CATEGORY_IDS)].copy()
-    texts = df.apply(_build_text, axis=1).tolist()
-    y = df["category"].map(ID_TO_IDX).astype(int).values
-
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            texts, y, test_size=0.2, random_state=random_state, stratify=y
-        )
-    except ValueError:
-        X_train, X_test, y_train, y_test = train_test_split(
-            texts, y, test_size=0.2, random_state=random_state
-        )
+    texts, y = _prepare_data(df)
+    X_train, X_test, y_train, y_test = _train_test_split(texts, y, random_state=random_state)
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
     emb_train = model.encode(X_train, batch_size=64, show_progress_bar=False)
     emb_test = model.encode(X_test, batch_size=64, show_progress_bar=False)
 
-    clf = LogisticRegression(max_iter=2000, class_weight="balanced", solver="lbfgs")
-    clf.fit(emb_train, y_train)
-    pred = clf.predict(emb_test)
-    acc = float(accuracy_score(y_test, pred))
-    f1 = float(f1_score(y_test, pred, average="weighted"))
-    cm = confusion_matrix(y_test, pred).tolist()
+    candidates: list[tuple[str, Any]] = [
+        ("emb_lr", LogisticRegression(max_iter=2000, class_weight="balanced", solver="lbfgs")),
+        (
+            "emb_rf",
+            RandomForestClassifier(
+                n_estimators=300,
+                random_state=random_state,
+                class_weight="balanced_subsample",
+                n_jobs=-1,
+            ),
+        ),
+    ]
+    best_name = ""
+    best_clf = None
+    best_metrics: dict[str, Any] | None = None
+    all_scores: dict[str, float] = {}
+    for name, clf in candidates:
+        clf.fit(emb_train, y_train)
+        pred = clf.predict(emb_test)
+        metrics = _score_predictions(y_test, pred)
+        all_scores[name] = float(metrics["eval_f1_weighted"])
+        if best_metrics is None or metrics["eval_f1_weighted"] > best_metrics["eval_f1_weighted"]:
+            best_name = name
+            best_clf = clf
+            best_metrics = metrics
 
-    bundle = {"encoder": model, "classifier": clf, "scaler": None}
-    return bundle, {"eval_accuracy": acc, "eval_f1_weighted": f1, "mode": "embedding", "confusion_matrix": cm}
+    assert best_clf is not None and best_metrics is not None
+    bundle = {"encoder": model, "classifier": best_clf, "scaler": None}
+    return bundle, {
+        **best_metrics,
+        "mode": "embedding",
+        "selected_model": best_name,
+        "candidate_f1_weighted": all_scores,
+    }
 
 
 def train_ensemble(df: pd.DataFrame, random_state: int = 42):
@@ -232,9 +307,51 @@ def train_ensemble(df: pd.DataFrame, random_state: int = 42):
         "eval_f1_weighted": f1,
         "mode": "ensemble",
         "confusion_matrix": cm,
+        "classification_report": classification_report(
+            y_test,
+            pred,
+            labels=list(range(len(CATEGORY_IDS))),
+            target_names=CATEGORY_IDS,
+            output_dict=True,
+            zero_division=0,
+        ),
         "version": "2.0.0-ensemble",
+        "selected_model": "stacked_tfidf_minilm_meta_lr",
     }
     return bundle, metrics
+
+
+def train_best_model(df: pd.DataFrame, random_state: int = 42):
+    contenders: list[tuple[str, Any, dict[str, Any], str]] = []
+
+    tfidf_obj, tfidf_metrics = train_tfidf(df, random_state=random_state)
+    contenders.append(("tfidf", tfidf_obj, tfidf_metrics, "1.0.0-tfidf-auto"))
+
+    if SentenceTransformer is not None:
+        emb_obj, emb_metrics = train_embedding(df, random_state=random_state)
+        contenders.append(("embedding", emb_obj, emb_metrics, "1.1.0-embedding-auto"))
+        ens_obj, ens_metrics = train_ensemble(df, random_state=random_state)
+        contenders.append(("ensemble", ens_obj, ens_metrics, "2.0.0-ensemble-auto"))
+
+    best_mode = ""
+    best_obj = None
+    best_metrics = None
+    leaderboard: dict[str, dict[str, float]] = {}
+    for mode, model_obj, metrics, version in contenders:
+        leaderboard[mode] = {
+            "eval_f1_weighted": float(metrics.get("eval_f1_weighted", 0.0)),
+            "eval_accuracy": float(metrics.get("eval_accuracy", 0.0)),
+        }
+        if best_metrics is None or metrics["eval_f1_weighted"] > best_metrics["eval_f1_weighted"]:
+            best_mode = mode
+            best_obj = model_obj
+            best_metrics = {**metrics, "version": version}
+
+    assert best_obj is not None and best_metrics is not None
+    best_metrics["selection_metric"] = "eval_f1_weighted"
+    best_metrics["mode_leaderboard"] = leaderboard
+    best_metrics["selected_mode"] = best_mode
+    return best_obj, best_metrics
 
 
 def save_artifacts(out_dir: Path, model_obj, meta: dict, training_rows: int):
@@ -256,6 +373,12 @@ def save_artifacts(out_dir: Path, model_obj, meta: dict, training_rows: int):
         "promotion_threshold": meta.get("promotion_threshold", 0.80),
         "promotion_gate_metric": meta.get("promotion_gate_metric", "eval_accuracy"),
         "promoted_to_production": meta.get("promoted_to_production", False),
+        "selected_model": meta.get("selected_model"),
+        "selected_mode": meta.get("selected_mode"),
+        "selection_metric": meta.get("selection_metric"),
+        "candidate_f1_weighted": meta.get("candidate_f1_weighted", {}),
+        "mode_leaderboard": meta.get("mode_leaderboard", {}),
+        "classification_report": meta.get("classification_report", {}),
     }
     (out_dir / "metadata.json").write_text(json.dumps(meta_out, indent=2), encoding="utf-8")
 
@@ -271,6 +394,8 @@ def _mlflow_log(meta: dict, training_rows: int, model_path: Path) -> None:
             mlflow.log_params(
                 {
                     "mode": meta.get("mode"),
+                    "selected_mode": meta.get("selected_mode", meta.get("mode")),
+                    "selected_model": meta.get("selected_model", ""),
                     "training_rows": training_rows,
                     "promotion_threshold": threshold,
                 }
@@ -288,6 +413,24 @@ def _mlflow_log(meta: dict, training_rows: int, model_path: Path) -> None:
                         "gold_eval_f1_weighted": float(meta.get("gold_eval_f1_weighted", 0)),
                     }
                 )
+            class_report = meta.get("classification_report", {}) or {}
+            for cat, vals in class_report.items():
+                if not isinstance(vals, dict):
+                    continue
+                try:
+                    mlflow.log_metric(f"{cat}_precision", float(vals.get("precision", 0)))
+                    mlflow.log_metric(f"{cat}_recall", float(vals.get("recall", 0)))
+                    mlflow.log_metric(f"{cat}_f1_score", float(vals.get("f1-score", 0)))
+                    mlflow.log_metric(f"{cat}_support", float(vals.get("support", 0)))
+                except Exception:
+                    pass
+            leaderboard = meta.get("mode_leaderboard", {})
+            for mode_name, scores in leaderboard.items():
+                try:
+                    mlflow.log_metric(f"{mode_name}_eval_f1_weighted", float(scores.get("eval_f1_weighted", 0)))
+                    mlflow.log_metric(f"{mode_name}_eval_accuracy", float(scores.get("eval_accuracy", 0)))
+                except Exception:
+                    pass
             if model_path.exists():
                 mlflow.log_artifact(str(model_path / "metadata.json"))
                 if os.environ.get("MLFLOW_ENABLE_REGISTRY", "1") == "1":
@@ -313,6 +456,7 @@ def run_training(
     out_dir: str,
     use_embedding: bool,
     use_ensemble: bool,
+    use_all_models: bool,
     gold_eval_csv: str | None,
 ) -> dict:
     random.seed(42)
@@ -321,7 +465,10 @@ def run_training(
     training_rows = len(df)
     out_path = Path(out_dir)
 
-    if use_ensemble:
+    if use_all_models:
+        model_obj, metrics = train_best_model(df)
+        meta = {**metrics}
+    elif use_ensemble:
         model_obj, metrics = train_ensemble(df)
         meta = {**metrics, "version": metrics.get("version", "2.0.0-ensemble")}
     elif use_embedding:
@@ -353,20 +500,25 @@ def main():
     ap.add_argument("--out", default=os.environ.get("MODEL_DIR", "model/artifacts"))
     ap.add_argument("--embedding", action="store_true")
     ap.add_argument("--ensemble", action="store_true")
+    ap.add_argument("--all-models", action="store_true", help="Train all supported families and keep best")
     ap.add_argument("--gold-eval", default="", help="Path to held-out gold evaluation CSV")
     args = ap.parse_args()
     use_emb = bool(args.embedding) or os.environ.get("USE_EMBEDDING_MODEL") == "1"
     use_ens = bool(args.ensemble) or os.environ.get("USE_ENSEMBLE") == "1"
+    use_all = bool(args.all_models) or os.environ.get("USE_ALL_MODELS") == "1"
     default_csv = os.path.join(os.environ.get("DATA_DIR", "data"), "transactions_train.csv")
     csv_path = None
     if args.data and os.path.isfile(args.data):
         csv_path = args.data
     elif os.path.isfile(default_csv):
         csv_path = default_csv
+    if use_all:
+        use_ens = False
+        use_emb = False
     if use_ens:
         use_emb = False
     gold_eval = _resolve_gold_eval_path(args.gold_eval or None)
-    meta = run_training(csv_path, args.out, use_emb, use_ens, gold_eval)
+    meta = run_training(csv_path, args.out, use_emb, use_ens, use_all, gold_eval)
     print(json.dumps(meta, indent=2))
 
 

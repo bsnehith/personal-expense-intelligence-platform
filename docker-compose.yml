@@ -85,6 +85,10 @@ services:
       - 0.0.0.0
       - --port
       - "5000"
+      # ML service talks to tracking server via Docker DNS host "mlflow:5000".
+      # MLflow 3.x host-header protection rejects this unless explicitly allowed.
+      - --allowed-hosts
+      - localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000
       - --backend-store-uri
       - ${DATABASE_URL_DOCKER:-postgresql://expense:expense@postgres:5432/expense}
       - --default-artifact-root
@@ -112,6 +116,7 @@ services:
       MODEL_DIR: /app/model/artifacts
       DATA_DIR: /app/data
       TRAIN_ON_BOOT: "1"
+      USE_ALL_MODELS: ${USE_ALL_MODELS:-0}
       USE_EMBEDDING_MODEL: ${USE_EMBEDDING_MODEL:-0}
       USE_ENSEMBLE: ${USE_ENSEMBLE:-0}
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://expense:expense@postgres:5432/expense}
@@ -179,8 +184,13 @@ services:
       retries: 5
       start_period: 15s
     environment:
+      ML_SERVICE_URL: http://ml-service:8001
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite-preview}
+      MONTHLY_AUTO_REVIEW_ENABLED: ${MONTHLY_AUTO_REVIEW_ENABLED:-1}
+      MONTHLY_AUTO_REVIEW_USER_ID: ${MONTHLY_AUTO_REVIEW_USER_ID:-default}
+      MONTHLY_AUTO_REVIEW_POLL_SEC: ${MONTHLY_AUTO_REVIEW_POLL_SEC:-3600}
+      MONTHLY_AUTO_REVIEW_TXN_LIMIT: ${MONTHLY_AUTO_REVIEW_TXN_LIMIT:-1500}
 
   api-gateway:
     build: ./api-gateway
@@ -216,6 +226,7 @@ services:
       - "9090:9090"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus

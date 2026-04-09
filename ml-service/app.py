@@ -16,7 +16,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from anomaly import anomaly_engine
-from db import get_transaction_payload, insert_transaction
+from db import (
+    get_transaction_payload,
+    insert_transaction,
+    list_recent_transactions,
+    record_anomaly_action,
+)
 from metrics import (
     categorisation_confidence,
     categorisation_latency_ms,
@@ -49,6 +54,19 @@ clf: Classifier | None = None
 _consumer_task: asyncio.Task | None = None
 
 
+def _train_cmd(csv: Path | None) -> list[str]:
+    cmd = [sys.executable, "-m", "model.train", "--out", str(MODEL_DIR)]
+    if csv is not None and csv.is_file():
+        cmd.extend(["--data", str(csv)])
+    if os.environ.get("USE_ALL_MODELS") == "1":
+        cmd.append("--all-models")
+    elif os.environ.get("USE_ENSEMBLE") == "1":
+        cmd.append("--ensemble")
+    elif os.environ.get("USE_EMBEDDING_MODEL") == "1":
+        cmd.append("--embedding")
+    return cmd
+
+
 def _transactions_train_csv() -> Path | None:
     """Prefer ml-service/data, then repo-root data/ (Docker mounts ./data → /app/data)."""
     for p in (DATA_DIR / "transactions_train.csv", _REPO_ROOT / "data" / "transactions_train.csv"):
@@ -64,13 +82,7 @@ def _maybe_train_on_boot() -> None:
     if (MODEL_DIR / "metadata.json").exists():
         return
     csv = _transactions_train_csv()
-    cmd = [sys.executable, "-m", "model.train", "--out", str(MODEL_DIR)]
-    if csv is not None:
-        cmd.extend(["--data", str(csv)])
-    if os.environ.get("USE_ENSEMBLE") == "1":
-        cmd.append("--ensemble")
-    elif os.environ.get("USE_EMBEDDING_MODEL") == "1":
-        cmd.append("--embedding")
+    cmd = _train_cmd(csv)
     env = os.environ.copy()
     if (_REPO_ROOT / "data").is_dir():
         env.setdefault("DATA_DIR", str(_REPO_ROOT / "data"))
@@ -260,19 +272,7 @@ def _maybe_retrain_async(total_corrections: int) -> None:
 
         def _run():
             csv = DATA_DIR / "transactions_train.csv"
-            cmd = [
-                sys.executable,
-                "-m",
-                "model.train",
-                "--out",
-                str(MODEL_DIR),
-            ]
-            if csv.is_file():
-                cmd.extend(["--data", str(csv)])
-            if os.environ.get("USE_ENSEMBLE") == "1":
-                cmd.append("--ensemble")
-            elif os.environ.get("USE_EMBEDDING_MODEL") == "1":
-                cmd.append("--embedding")
+            cmd = _train_cmd(csv if csv.is_file() else None)
             try:
                 subprocess.run(cmd, check=True, cwd=str(Path(__file__).resolve().parent))
             except subprocess.CalledProcessError:
@@ -330,6 +330,12 @@ class CorrectIn(BaseModel):
     merchant_raw: str | None = None
     description: str | None = None
     amount: float | None = None
+
+
+class AnomalyActionIn(BaseModel):
+    txn_id: str
+    action: str
+    note: str | None = None
 
 
 @app.get("/metrics")
@@ -406,19 +412,7 @@ def correct(body: CorrectIn):
 @app.post("/retrain")
 def retrain():
     csv = DATA_DIR / "transactions_train.csv"
-    cmd = [
-        sys.executable,
-        "-m",
-        "model.train",
-        "--out",
-        str(MODEL_DIR),
-    ]
-    if csv.is_file():
-        cmd.extend(["--data", str(csv)])
-    if os.environ.get("USE_ENSEMBLE") == "1":
-        cmd.append("--ensemble")
-    elif os.environ.get("USE_EMBEDDING_MODEL") == "1":
-        cmd.append("--embedding")
+    cmd = _train_cmd(csv if csv.is_file() else None)
     try:
         subprocess.run(cmd, check=True, cwd=str(Path(__file__).resolve().parent))
     except subprocess.CalledProcessError as e:
@@ -430,6 +424,20 @@ def retrain():
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         model_accuracy_current.set(float(meta.get("eval_accuracy", 0)))
     return {"ok": True, "message": "Retrained and reloaded"}
+
+
+@app.post("/anomaly-action")
+def anomaly_action(body: AnomalyActionIn):
+    action = (body.action or "").strip().lower()
+    if action not in {"expected", "review"}:
+        raise HTTPException(status_code=400, detail="action must be 'expected' or 'review'")
+    return record_anomaly_action(body.txn_id, action, body.note)
+
+
+@app.get("/transactions/recent")
+def transactions_recent(user_id: str = USER_DEFAULT, limit: int = 500):
+    rows = list_recent_transactions(user_id=user_id, limit=limit)
+    return {"transactions": rows}
 
 
 @app.get("/model-info")

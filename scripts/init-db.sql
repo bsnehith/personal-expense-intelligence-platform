@@ -30,3 +30,11 @@ CREATE TABLE IF NOT EXISTS parse_events (
     latency_ms DOUBLE PRECISION,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS anomaly_actions (
+    txn_id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    note TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_anomaly_actions_updated ON anomaly_actions (updated_at DESC);

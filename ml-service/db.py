@@ -118,3 +118,51 @@ def log_parse_event(filename: str, fmt: str, success: bool, rows: int, latency_m
                 """,
                 (filename, fmt, success, rows, latency_ms),
             )
+
+
+def list_recent_transactions(user_id: str = "default", limit: int = 500) -> list[dict[str, Any]]:
+    """Recent transaction payloads (newest first) for coach/snapshot endpoints."""
+    lim = max(1, min(int(limit), 5000))
+    with connect() as conn:
+        if conn is None:
+            return []
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload
+                FROM transactions
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (user_id, lim),
+            )
+            rows = cur.fetchall() or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        p = row[0]
+        if isinstance(p, dict):
+            out.append(p)
+        elif isinstance(p, str):
+            try:
+                out.append(json.loads(p))
+            except Exception:
+                continue
+    return out
+
+
+def record_anomaly_action(txn_id: str, action: str, note: str | None = None) -> dict[str, Any]:
+    with connect() as conn:
+        if conn is None:
+            return {"ok": True, "stored": False, "txn_id": txn_id, "action": action}
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO anomaly_actions (txn_id, action, note)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (txn_id)
+                DO UPDATE SET action = EXCLUDED.action, note = EXCLUDED.note, updated_at = NOW()
+                """,
+                (txn_id, action, note),
+            )
+    return {"ok": True, "stored": True, "txn_id": txn_id, "action": action}
