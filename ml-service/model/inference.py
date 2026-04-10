@@ -10,6 +10,45 @@ import numpy as np
 from .categories import CATEGORY_IDS, IDX_TO_ID, REVIEW_THRESHOLD, UNCATEGORISED_THRESHOLD
 from .merchant_clean import clean_merchant
 
+_KEYWORD_CATEGORY: list[tuple[str, str]] = [
+    ("zomato", "food_dining"),
+    ("swiggy", "food_dining"),
+    ("zepto", "food_dining"),
+    ("tea time", "food_dining"),
+    ("cafe", "food_dining"),
+    ("uber", "transport"),
+    ("ola", "transport"),
+    ("rapido", "transport"),
+    ("irctc", "travel"),
+    ("makemytrip", "travel"),
+    ("air india", "travel"),
+    ("amazon", "shopping"),
+    ("flipkart", "shopping"),
+    ("myntra", "shopping"),
+    ("reliance digital", "shopping"),
+    ("apollo", "health_medical"),
+    ("pharmeasy", "health_medical"),
+    ("hospital", "health_medical"),
+    ("netflix", "entertainment"),
+    ("spotify", "entertainment"),
+    ("steam", "entertainment"),
+    ("rent", "housing"),
+    ("home loan", "housing"),
+    ("electricity", "housing"),
+    ("internet bill", "housing"),
+    ("github", "subscriptions"),
+    ("google one", "subscriptions"),
+    ("gym", "subscriptions"),
+]
+
+
+def _keyword_category(merchant_raw: str, description: str) -> str | None:
+    text = f"{merchant_raw} {description}".lower()
+    for key, cat in _KEYWORD_CATEGORY:
+        if key in text:
+            return cat
+    return None
+
 
 class Classifier:
     def __init__(self, artifact_dir: Path):
@@ -59,7 +98,8 @@ class Classifier:
         cat = IDX_TO_ID[int(top_i)]
 
         if float(top_p) < UNCATEGORISED_THRESHOLD:
-            cat = "uncategorised"
+            heuristic = _keyword_category(merchant_raw or "", description or "")
+            cat = heuristic or "uncategorised"
 
         alternatives = [
             {"category": IDX_TO_ID[int(i)], "confidence": float(p)}
